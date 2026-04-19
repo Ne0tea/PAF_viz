@@ -4,7 +4,11 @@ Author: Ne0tea
 version: 3.0
 Date: 2024-05-27 19:21:44
 LastEditors: Ne0tea
+<<<<<<< HEAD
 LastEditTime: 2026-04-20 01:56:54
+=======
+LastEditTime: 2026-04-21 14:12:00
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 '''
 import argparse
 from dataclasses import dataclass, field
@@ -24,8 +28,11 @@ plt.rcParams['pdf.fonttype'] = 42
 plt.rcParams['font.family'] = 'Arial'
 
 # Default colors
+<<<<<<< HEAD
 DEFAULT_TRIANGLE_COLOR = '#780000'
 DEFAULT_RECT_COLOR = '#0066CC'
+=======
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 RECT_ALPHA = 0.3
 TRIANGLE_MARKER_SIZE_PT = 6
 TRIANGLE_TRACK_PAD_PT = 0.5
@@ -450,8 +457,13 @@ def map_interval_to_global(chrom, start, end, seq_offsets, region=None):
         logging.warning('No chrom exsists in seqoffsets.')
         return None
 
+<<<<<<< HEAD
     draw_start = int(start)
     draw_end = int(end)
+=======
+    draw_start = float(start)
+    draw_end = float(end)
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 
     normalized = normalize_region(region)
     r_start = 0
@@ -459,8 +471,13 @@ def map_interval_to_global(chrom, start, end, seq_offsets, region=None):
         r_chrom, r_start, r_end = normalized
         if chrom != r_chrom:
             return None
+<<<<<<< HEAD
         draw_start = max(draw_start, int(r_start))
         draw_end = min(draw_end, int(r_end))
+=======
+        draw_start = max(draw_start, float(r_start))
+        draw_end = min(draw_end, float(r_end))
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 
     if draw_end <= draw_start:
         return None
@@ -468,12 +485,109 @@ def map_interval_to_global(chrom, start, end, seq_offsets, region=None):
     # If a local region is enabled, convert genomic coordinates into
     # region-local coordinates so the displayed axis starts from 0.
     if normalized is not None:
+<<<<<<< HEAD
         draw_start -= int(r_start)
         draw_end -= int(r_start)
+=======
+        draw_start -= float(r_start)
+        draw_end -= float(r_start)
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 
     return seq_offsets[chrom] + draw_start, seq_offsets[chrom] + draw_end
 
 
+<<<<<<< HEAD
+=======
+def _intersect_line_with_interval(v0, v1, low, high, u0, u1):
+    """Intersect parametric line value v(u)=v0+(v1-v0)u with [low, high]."""
+    dv = float(v1) - float(v0)
+    low = float(low)
+    high = float(high)
+
+    if dv == 0:
+        if low <= float(v0) <= high:
+            return u0, u1
+        return None
+
+    c1 = (low - float(v0)) / dv
+    c2 = (high - float(v0)) / dv
+    lo = min(c1, c2)
+    hi = max(c1, c2)
+
+    u0_new = max(float(u0), lo)
+    u1_new = min(float(u1), hi)
+    if u1_new <= u0_new:
+        return None
+    return u0_new, u1_new
+
+
+def clip_alignment_pair_by_regions(
+    query_start,
+    query_end,
+    target_start,
+    target_end,
+    strand,
+    query_region=None,
+    target_region=None,
+):
+    """Coupled clipping for one alignment segment.
+
+    Keep query/target endpoints synchronized in one shared parameter space,
+    so clipping on either axis will update the opposite axis consistently.
+    """
+    qs = float(query_start)
+    qe = float(query_end)
+    ts = float(target_start)
+    te = float(target_end)
+
+    if qe <= qs or te <= ts:
+        return None
+
+    # Parametric segment in [0, 1] along query direction.
+    u0, u1 = 0.0, 1.0
+
+    # Clip by query region (if any).
+    normalized_q = normalize_region(query_region) if query_region is not None else None
+    if normalized_q is not None:
+        _, q_low, q_high = normalized_q
+        clipped = _intersect_line_with_interval(qs, qe, q_low, q_high, u0, u1)
+        if clipped is None:
+            return None
+        u0, u1 = clipped
+
+    # Build target line orientation used by plotting.
+    if strand == '-':
+        t0, t1 = te, ts
+    else:
+        t0, t1 = ts, te
+
+    # Clip by target region (if any).
+    normalized_t = normalize_region(target_region) if target_region is not None else None
+    if normalized_t is not None:
+        _, t_low, t_high = normalized_t
+        clipped = _intersect_line_with_interval(t0, t1, t_low, t_high, u0, u1)
+        if clipped is None:
+            return None
+        u0, u1 = clipped
+
+    # Recover clipped query interval.
+    q_clip_start = qs + (qe - qs) * u0
+    q_clip_end = qs + (qe - qs) * u1
+
+    # Recover clipped target interval from oriented target line,
+    # then convert to ascending genomic coordinates.
+    t_clip_a = t0 + (t1 - t0) * u0
+    t_clip_b = t0 + (t1 - t0) * u1
+    t_clip_start = min(t_clip_a, t_clip_b)
+    t_clip_end = max(t_clip_a, t_clip_b)
+
+    if q_clip_end <= q_clip_start or t_clip_end <= t_clip_start:
+        return None
+
+    return q_clip_start, q_clip_end, t_clip_start, t_clip_end
+
+
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 def draw_bed_rectangles(ax, bed_data, seq_offsets, orientation='x', region=None, axis_scale=1e6):
     """Draw background rectangles from BED file in global coordinates"""
     if not bed_data:
@@ -1442,10 +1556,31 @@ def draw_dotplot_with_highlight(
         if row.query_name not in query_offsets or row.target_name not in target_offsets:
             continue
 
+<<<<<<< HEAD
         mapped_query = map_interval_to_global(
             row.query_name,
             row.query_start,
             row.query_end,
+=======
+        clipped_pair = clip_alignment_pair_by_regions(
+            row.query_start,
+            row.query_end,
+            row.target_start,
+            row.target_end,
+            row.strand,
+            query_region=query_region,
+            target_region=target_region,
+        )
+        if clipped_pair is None:
+            continue
+
+        q_clip_start, q_clip_end, t_clip_start, t_clip_end = clipped_pair
+
+        mapped_query = map_interval_to_global(
+            row.query_name,
+            q_clip_start,
+            q_clip_end,
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
             query_offsets,
             region=query_region,
         )
@@ -1454,8 +1589,13 @@ def draw_dotplot_with_highlight(
 
         mapped_target = map_interval_to_global(
             row.target_name,
+<<<<<<< HEAD
             row.target_start,
             row.target_end,
+=======
+            t_clip_start,
+            t_clip_end,
+>>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
             target_offsets,
             region=target_region,
         )
