@@ -1,0 +1,7 @@
+# Ignore everything by default
+*
+
+# Keep only files needed for this standalone GitHub repository
+!.gitignore
+!README.md
+!PAF_viz.py
