@@ -17,7 +17,7 @@ PAF_viz 是一个用于 **PAF 比对结果 dotplot 可视化** 的 Python 工具
  * @version: 
  * @Date: 2026-04-21 18:00:15
  * @LastEditors: Ne0tea
- * @LastEditTime: 2026-04-21 18:00:15
+ * @LastEditTime: 2026-04-21 18:03:55
 -->
 # PAF_viz
 
@@ -106,8 +106,11 @@ Output file:
 - **PAF**: pairwise alignment records (primary plotting source)
 - **GFF3** *(optional)*: gene structure annotations
 - **BED** *(optional)*: axis markers and highlight intervals
+<<<<<<< HEAD
 >>>>>>> d5e4d8b (feat: initial PAF_viz script with README and repo-scoped gitignore)
 
 ## License
 
 MIT
+=======
+>>>>>>> b7ae3ca (feat: add initial PAF visualization script)
