@@ -20,6 +20,34 @@ from matplotlib import transforms as mtransforms
 from matplotlib.colors import is_color_like
 from matplotlib.patches import Rectangle
 
+LOGGER_NAME = 'PAF_viz'
+logger = logging.getLogger(LOGGER_NAME)
+
+
+def setup_logging(stream=None):
+    """Configure logging so this script keeps INFO logs while dependencies only emit WARNING+."""
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(logging.WARNING)
+
+    root_handler = logging.StreamHandler(stream)
+    root_handler.setLevel(logging.WARNING)
+    root_handler.setFormatter(formatter)
+    root_logger.addHandler(root_handler)
+
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    module_handler = logging.StreamHandler(stream)
+    module_handler.setLevel(logging.INFO)
+    module_handler.setFormatter(formatter)
+    logger.addHandler(module_handler)
+
+    return logger
+
 plt.rcParams['pdf.fonttype'] = 42
 plt.rcParams['font.family'] = 'Arial'
 
@@ -444,7 +472,7 @@ def _points_to_figure_fraction(fig, points, axis='height'):
 def map_interval_to_global(chrom, start, end, seq_offsets, region=None):
     """Map sequence-local interval to global concatenated coordinates"""
     if chrom not in seq_offsets:
-        logging.warning('No chrom exsists in seqoffsets.')
+        logger.warning('No chrom exsists in seqoffsets.')
         return None
 
     draw_start = float(start)
@@ -1361,7 +1389,7 @@ def draw_dotplot_with_highlight(
     """Draw one global dotplot including all query-target sequences"""
     dataframe = ctx.dataframe
     if dataframe.empty:
-        logging.warning('No alignments to draw after filtering.')
+        logger.warning('No alignments to draw after filtering.')
         return
 
     query_layout = ctx.query_layout
@@ -1379,7 +1407,7 @@ def draw_dotplot_with_highlight(
     beds = ctx.beds
 
     if target_total <= 0 or query_total <= 0:
-        logging.warning('Invalid target/query total length; skip drawing.')
+        logger.warning('Invalid target/query total length; skip drawing.')
         return
 
     axis_scale = ctx.axis_scale
@@ -1656,7 +1684,7 @@ def draw_dotplot_with_highlight(
     plt.savefig(out_pdf, format='pdf', bbox_inches='tight')
     # plt.savefig(out_png, format='png', dpi=300, bbox_inches='tight')
     plt.close()
-    logging.info('Saved plot: %s', out_pdf)
+    logger.info('Saved plot: %s', out_pdf)
 
 
 def run(config: PlotInputConfig):
@@ -1679,7 +1707,7 @@ def run(config: PlotInputConfig):
     df = df[df['alignment_block_length'] > config.filter_len].copy()
 
     if df.empty:
-        logging.warning('No alignment records remain after length filtering: > %s', config.filter_len)
+        logger.warning('No alignment records remain after length filtering: > %s', config.filter_len)
         return
 
     # Validate/normalize regions against PAF content so invalid requests fail fast.
@@ -1718,7 +1746,7 @@ def run(config: PlotInputConfig):
         output_prefix=config.output_prefix,
     )
 
-    logging.info('Start plotting global concatenated dotplot with %d alignments', len(df))
+    logger.info('Start plotting global concatenated dotplot with %d alignments', len(df))
     draw_dotplot_with_highlight(runtime_ctx)
 
 
@@ -1777,7 +1805,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    setup_logging()
 
     # target_region = parse_region(args.target_region)
     # query_region = parse_region(args.query_region)
