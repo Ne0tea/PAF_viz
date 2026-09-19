@@ -1,10 +1,11 @@
+#!/bin/env python
 '''
 Descripttion: PAF alignment dotplot visualization with enhanced features
 Author: Ne0tea
 version: 3.0
 Date: 2024-05-27 19:21:44
 LastEditors: Ne0tea
-LastEditTime: 2026-04-24 16:08:27
+LastEditTime: 2026-09-19 16:11:27
 '''
 import argparse
 from dataclasses import dataclass, field
@@ -93,6 +94,7 @@ class PlotInputConfig:
     bed_rect_y: Optional[str] = None
     filter_len: int = 2000
     output_prefix: str = 'all_query_target_dotplot'
+    cs: bool = False
 
 
 @dataclass
@@ -168,6 +170,7 @@ class PlotRuntimeContext:
     axis_scale: float
     unit_label: str
     output_prefix: str
+    use_cigar: bool = False
 
 def _safe_color(color_value, default_color):
     """Return a valid matplotlib color, otherwise fallback to default."""
@@ -243,6 +246,164 @@ def normalize_region(region):
 
     start, end = sorted((start, end))
     return str(chrom), start, end
+
+
+_CIGAR_RE = re.compile(r'(\d+)([MIDNSHP=X])')
+_CIGAR_QUERY_OPS = frozenset('MIS=X')
+_CIGAR_TARGET_OPS = frozenset('MDN=X')
+_CIGAR_MATCH_OPS = frozenset('M=')
+
+
+def parse_cigar(cigar):
+    """Parse a SAM/PAF CIGAR string into ``(length, operation)`` tuples.
+
+    The parser is deliberately strict so a malformed optional PAF tag cannot
+    silently produce incorrectly positioned match blocks.
+    """
+    if cigar is None or (isinstance(cigar, float) and math.isnan(cigar)):
+        return []
+
+    text = str(cigar).strip()
+    if not text or text == '*':
+        return []
+
+    operations = []
+    cursor = 0
+    for match in _CIGAR_RE.finditer(text):
+        if match.start() != cursor:
+            raise ValueError(f'Invalid CIGAR string: {text!r}')
+        length = int(match.group(1))
+        if length <= 0:
+            raise ValueError(f'CIGAR operation length must be positive: {text!r}')
+        operations.append((length, match.group(2)))
+        cursor = match.end()
+
+    if cursor != len(text) or not operations:
+        raise ValueError(f'Invalid CIGAR string: {text!r}')
+    return operations
+
+
+def cigar_match_intervals(
+    query_start,
+    query_end,
+    target_start,
+    target_end,
+    strand,
+    cigar,
+):
+    """Return query/target half-open intervals for CIGAR match operations.
+
+    Coordinates are kept in the PAF coordinate system (both intervals are
+    ascending genomic/query coordinates).  On the reverse strand minimap2's
+    CIGAR consumes the reverse-complemented query, so query positions are
+    consumed from ``query_end`` toward ``query_start``.  ``X`` operations are
+    substitutions, not matches, and are therefore omitted; ``M`` and ``=``
+    operations are emitted.
+    """
+    operations = parse_cigar(cigar)
+    if not operations:
+        return []
+
+    query_start = int(query_start)
+    query_end = int(query_end)
+    target_end = int(target_end)
+    if query_end <= query_start:
+        return []
+    query_cursor = query_start if strand != '-' else query_end
+    target_cursor = int(target_start)
+    intervals = []
+    for length, operation in operations:
+        if operation in _CIGAR_MATCH_OPS:
+            if strand == '-':
+                intervals.append((
+                    query_cursor - length,
+                    query_cursor,
+                    target_cursor,
+                    target_cursor + length,
+                ))
+            else:
+                intervals.append((
+                    query_cursor,
+                    query_cursor + length,
+                    target_cursor,
+                    target_cursor + length,
+                ))
+
+        if operation in _CIGAR_QUERY_OPS:
+            query_cursor += length if strand != '-' else -length
+        if operation in _CIGAR_TARGET_OPS:
+            target_cursor += length
+
+    expected_query_end = query_start if strand == '-' else query_end
+    if query_cursor != expected_query_end:
+        raise ValueError(
+            f'CIGAR query span does not match PAF coordinates: '
+            f'{cigar!r} consumed through {query_cursor}, expected {expected_query_end}'
+        )
+    if target_cursor != target_end:
+        raise ValueError(
+            f'CIGAR target span does not match PAF coordinates: '
+            f'{cigar!r} consumed through {target_cursor}, expected {target_end}'
+        )
+    return intervals
+
+
+def _extract_cigar_tag(optional_fields):
+    """Extract a CIGAR tag from PAF optional fields.
+
+    ``cg:Z:...`` is the standard minimap2 PAF tag.  ``cigar:Z:...`` and a
+    bare CIGAR-looking ``cs:Z:...`` are accepted for interoperability with
+    tools that rename the tag, while regular minimap2 ``cs`` difference strings
+    are rejected by ``parse_cigar`` later.
+    """
+    fallback_cs = None
+    for field in optional_fields:
+        parts = field.split(':', 2)
+        if len(parts) != 3:
+            continue
+        tag, value_type, value = parts
+        if value_type != 'Z':
+            continue
+        if tag in {'cg', 'cigar'}:
+            return value
+        if tag == 'cs':
+            fallback_cs = value
+    return fallback_cs
+
+
+def read_paf_dataframe(paf_file, include_cigar=False):
+    """Read the twelve mandatory PAF columns and optional CIGAR tags."""
+    column_names = [
+        'query_name', 'query_length', 'query_start', 'query_end', 'strand',
+        'target_name', 'target_length', 'target_start', 'target_end',
+        'residue_matches', 'alignment_block_length', 'mapping_quality',
+    ]
+    dataframe = pd.read_table(
+        paf_file,
+        header=None,
+        names=column_names,
+        usecols=range(12),
+    )
+
+    if not include_cigar:
+        return dataframe
+
+    cigars = []
+    with open(paf_file, 'r') as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            fields = line.rstrip('\n\r').split('\t')
+            cigars.append(_extract_cigar_tag(fields[12:]))
+
+    if len(cigars) != len(dataframe):
+        raise ValueError(
+            f'PAF row count changed while reading optional CIGAR tags: '
+            f'{len(dataframe)} mandatory rows, {len(cigars)} tag rows.'
+        )
+    dataframe = dataframe.copy()
+    dataframe['cigar'] = cigars
+    return dataframe
 
 
 def ensure_region_exists_in_paf(dataframe, region, axis='target'):
@@ -1551,67 +1712,110 @@ def draw_dotplot_with_highlight(
     )
     ax.add_patch(clip_rect)
 
-    # Draw alignments
+    # Draw alignments.  In CIGAR mode each M/= operation is rendered as its
+    # own line segment, so insertions/deletions and substitutions create gaps
+    # instead of being bridged by one whole-alignment line.
+    malformed_cigar_warned = False
+    missing_match_warned = False
     for row in dataframe.itertuples(index=False):
         if row.query_name not in query_offsets or row.target_name not in target_offsets:
             continue
 
-        clipped_pair = clip_alignment_pair_by_regions(
-            row.query_start,
-            row.query_end,
-            row.target_start,
-            row.target_end,
-            row.strand,
-            query_region=query_region,
-            target_region=target_region,
-        )
-        if clipped_pair is None:
-            continue
-
-        q_clip_start, q_clip_end, t_clip_start, t_clip_end = clipped_pair
-
-        mapped_query = map_interval_to_global(
-            row.query_name,
-            q_clip_start,
-            q_clip_end,
-            query_offsets,
-            region=query_region,
-        )
-        if mapped_query is None:
-            continue
-
-        mapped_target = map_interval_to_global(
-            row.target_name,
-            t_clip_start,
-            t_clip_end,
-            target_offsets,
-            region=target_region,
-        )
-        if mapped_target is None:
-            continue
-
-        q1, q2 = mapped_query
-        t1, t2 = mapped_target
-
-        qs, qe = q1 / axis_scale, q2 / axis_scale
-        ts, te = t1 / axis_scale, t2 / axis_scale
-
-        if row.strand == '+':
-            xs, ys = [qs, qe], [ts, te]
+        if ctx.use_cigar:
+            try:
+                interval_pairs = cigar_match_intervals(
+                    row.query_start,
+                    row.query_end,
+                    row.target_start,
+                    row.target_end,
+                    row.strand,
+                    row.cigar,
+                )
+            except ValueError as exc:
+                if not malformed_cigar_warned:
+                    logger.warning(
+                        'Skipping malformed CIGAR records (first: %s -> %s): %s',
+                        row.query_name,
+                        row.target_name,
+                        exc,
+                    )
+                    malformed_cigar_warned = True
+                continue
+            if not interval_pairs:
+                if not missing_match_warned:
+                    logger.warning(
+                        'Skipping alignments without M/= CIGAR intervals '
+                        '(first: %s -> %s)',
+                        row.query_name,
+                        row.target_name,
+                    )
+                    missing_match_warned = True
+                continue
         else:
-            xs, ys = [qs, qe], [te, ts]
+            interval_pairs = [(
+                row.query_start,
+                row.query_end,
+                row.target_start,
+                row.target_end,
+            )]
 
-        line_artist = ax.plot(
-            xs,
-            ys,
-            linestyle='-',
-            linewidth=1.0,
-            color='black',
-            alpha=0.85,
-            solid_capstyle='round',
-            zorder=2,
-        )[0]
-        line_artist.set_clip_path(clip_rect)
+        for query_start, query_end, target_start, target_end in interval_pairs:
+            clipped_pair = clip_alignment_pair_by_regions(
+                query_start,
+                query_end,
+                target_start,
+                target_end,
+                row.strand,
+                query_region=query_region,
+                target_region=target_region,
+            )
+            if clipped_pair is None:
+                continue
+
+            q_clip_start, q_clip_end, t_clip_start, t_clip_end = clipped_pair
+
+            mapped_query = map_interval_to_global(
+                row.query_name,
+                q_clip_start,
+                q_clip_end,
+                query_offsets,
+                region=query_region,
+            )
+            if mapped_query is None:
+                continue
+
+            mapped_target = map_interval_to_global(
+                row.target_name,
+                t_clip_start,
+                t_clip_end,
+                target_offsets,
+                region=target_region,
+            )
+            if mapped_target is None:
+                continue
+
+            q1, q2 = mapped_query
+            t1, t2 = mapped_target
+
+            qs, qe = q1 / axis_scale, q2 / axis_scale
+            ts, te = t1 / axis_scale, t2 / axis_scale
+
+            if row.strand == '+':
+                xs, ys = [qs, qe], [ts, te]
+            else:
+                xs, ys = [qs, qe], [te, ts]
+
+            line_artist = ax.plot(
+                xs,
+                ys,
+                linestyle='-',
+                linewidth=1.0,
+                color='black',
+                alpha=0.85,
+                solid_capstyle='round',
+                zorder=2,
+            )[0]
+            line_artist.set_clip_path(clip_rect)
 
     # Sequence boundaries and labels
     draw_sequence_boundaries_and_labels(
@@ -1697,13 +1901,7 @@ def run(config: PlotInputConfig):
         config.bed_rect_y,
     )
 
-    column_names = [
-        'query_name', 'query_length', 'query_start', 'query_end', 'strand',
-        'target_name', 'target_length', 'target_start', 'target_end',
-        'residue_matches', 'alignment_block_length', 'mapping_quality',
-    ]
-
-    df = pd.read_table(config.paf_file, header=None, names=column_names, usecols=range(12))
+    df = read_paf_dataframe(config.paf_file, include_cigar=config.cs)
     df = df[df['alignment_block_length'] > config.filter_len].copy()
 
     if df.empty:
@@ -1744,15 +1942,16 @@ def run(config: PlotInputConfig):
         axis_scale=axis_scale,
         unit_label=unit_label,
         output_prefix=config.output_prefix,
+        use_cigar=config.cs,
     )
 
     logger.info('Start plotting global concatenated dotplot with %d alignments', len(df))
     draw_dotplot_with_highlight(runtime_ctx)
 
 
-def main(paf_file,  target_region, query_region, target_gff, query_gff,
+def main(paf_file, target_region, query_region, target_gff, query_gff,
                     bed_tri_x, bed_tri_y, bed_rect_x, bed_rect_y,
-                    filter_len, output_prefix, ):
+                    filter_len, output_prefix, cs=False, ):
 
     config = PlotInputConfig(
         paf_file=paf_file,
@@ -1766,6 +1965,7 @@ def main(paf_file,  target_region, query_region, target_gff, query_gff,
         bed_rect_y=bed_rect_y,
         filter_len=filter_len,
         output_prefix=output_prefix,
+        cs=cs,
     )
     run(config)
 
@@ -1800,6 +2000,8 @@ if __name__ == '__main__':
 
     parser.add_argument('-flen', '--filter-len', dest='flen', default=2000, type=int,
                         help='Filter alignments shorter than this length')
+    parser.add_argument('-c','--cs', action='store_true',
+                        help='Draw each M/= match interval from the PAF CIGAR tag (cg:Z/cigar:Z)')
     parser.add_argument('-o', '--outpre', dest='outpre', default='all_query_target_dotplot', type=str,
                         help='Output plot files')
 
@@ -1807,13 +2009,8 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    # target_region = parse_region(args.target_region)
-    # query_region = parse_region(args.query_region)
-
     main(
         args.paf,
-        # target_region,
-        # query_region,
         args.target_region,
         args.query_region,
         args.target_gff,
@@ -1824,6 +2021,7 @@ if __name__ == '__main__':
         args.bed_rect_y,
         args.flen,
         args.outpre,
+        args.cs,
     )
 
     # tets_paf = r'/mnt/e/Bio_analysis/PWS_lr/W2_hap1_CHM13v2m_chr15.paf'
